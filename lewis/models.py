@@ -189,8 +189,9 @@ class ModelBank:
         # Forward through patch embedding
         x = model.patch_embed(x)
         
-        # Add cls token
-        if hasattr(model, 'cls_token'):
+        # Add cls token (some models like SigLIP set cls_token=None)
+        has_cls = hasattr(model, 'cls_token') and model.cls_token is not None
+        if has_cls:
             cls_token = model.cls_token.expand(x.shape[0], -1, -1)
             x = torch.cat([cls_token, x], dim=1)
         
@@ -212,13 +213,13 @@ class ModelBank:
             x = model.norm(x)
         
         # Split cls and patch tokens
-        if hasattr(model, 'cls_token'):
+        if has_cls:
             cls_token = x[:, 0]  # [batch, embed_dim]
             patch_tokens = x[:, 1:]  # [batch, num_patches, embed_dim]
         else:
-            # No cls token, use global average pooling for cls
-            cls_token = x.mean(dim=1)
+            # No cls token (e.g. SigLIP), use global average pooling
             patch_tokens = x
+            cls_token = x.mean(dim=1)
         
         return patch_tokens, cls_token
     
