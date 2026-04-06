@@ -49,6 +49,7 @@ def train_condition(
     train_loader: DataLoader,
     val_loader: DataLoader,
     device: torch.device,
+    num_classes: int = 1500,
     max_epochs: int = 10,
     patience: int = 2,
     learning_rate: float = 1e-4,
@@ -74,17 +75,16 @@ def train_condition(
     """
     start_time = time.time()
     
-    logger.info(f"Training condition: {condition_config.name}")
-    logger.info(f"Active models: {condition_config.active_models}")
-    logger.info(f"Connectors: {condition_config.connector_pairs}")
+    active_models = sorted(list(condition_config.model_subset.models))
+    logger.info(f"Training condition: {condition_config.condition_name}")
+    logger.info(f"Active models: {active_models}")
+    logger.info(f"Connector type: {condition_config.connector_type}")
     
     # Create composed system for this condition
     system = ComposedSystem(
         model_bank=model_bank,
-        active_models=condition_config.active_models,
-        connector_pairs=condition_config.connector_pairs,
-        connector_config=condition_config.connector_config,
-        task_head_config=condition_config.task_head_config
+        active_models=active_models,
+        num_classes=num_classes
     ).to(device)
     
     # Only train connectors and task head

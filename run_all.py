@@ -124,9 +124,9 @@ def setup_device(device_arg: str) -> torch.device:
     logger.info(f"Using device: {device}")
     
     if device.type == 'cuda':
-        device_info = get_device_info(device)
-        logger.info(f"GPU: {device_info['name']}")
-        logger.info(f"Memory: {device_info['memory_total']:.1f} GB total, {device_info['memory_free']:.1f} GB free")
+        device_info = get_device_info()
+        logger.info(f"GPU: {device_info.get('name', 'unknown')}")
+        logger.info(f"Memory: {device_info.get('memory_gb', 0):.1f} GB")
         
         # Enable memory efficiency settings for large models
         torch.backends.cudnn.benchmark = True
@@ -281,7 +281,7 @@ def main():
         all_conditions = get_all_conditions()
         if args.conditions:
             # Filter to specific conditions
-            conditions = [c for c in all_conditions if c.name in args.conditions]
+            conditions = [c for c in all_conditions if c.condition_name in args.conditions]
             if not conditions:
                 raise ValueError(f"No matching conditions found for: {args.conditions}")
         else:
@@ -292,19 +292,30 @@ def main():
         if args.dry_run:
             logger.info("Dry run mode - validating pipeline without training")
             for condition in conditions[:2]:  # Just test first 2 conditions
-                logger.info(f"Would train condition: {condition.name}")
+                logger.info(f"Would train condition: {condition.condition_name}")
             return
         
         # Run all conditions
         all_results = {}
         total_start = time.time()
         
+        num_classes = len(answer_vocab)
+        logger.info(f"Number of answer classes: {num_classes}")
+        
+        from lewis.connectors import ComposedSystem, ConnectorConfig
+        
         for i, condition in enumerate(conditions):
             logger.info(f"\n{'-'*60}")
-            logger.info(f"Condition {i+1}/{len(conditions)}: {condition.name}")
+            logger.info(f"Condition {i+1}/{len(conditions)}: {condition.condition_name}")
             logger.info(f"{'-'*60}")
             
             condition_start = time.time()
+            active_models = sorted(list(condition.model_subset.models))
+            logger.info(f"Active models: {active_models}")
+            logger.info(f"Connector type: {condition.connector_type}")
+            
+            # Set seed for this condition
+            set_random_seed(condition.seed)
             
             training_result = None
             
@@ -317,6 +328,7 @@ def main():
                     train_loader=train_loader,
                     val_loader=val_loader,
                     device=device,
+                    num_classes=num_classes,
                     max_epochs=args.max_epochs,
                     learning_rate=args.learning_rate
                 )
@@ -326,13 +338,11 @@ def main():
             logger.info("Starting evaluation...")
             
             # Create system for evaluation
-            from lewis.connectors import ComposedSystem
             system = ComposedSystem(
                 model_bank=model_bank,
-                active_models=condition.active_models,
-                connector_pairs=condition.connector_pairs,
-                connector_config=condition.connector_config,
-                task_head_config=condition.task_head_config
+                active_models=active_models,
+                num_classes=num_classes,
+                connector_config=ConnectorConfig()
             ).to(device)
             
             # Load trained weights if available
@@ -344,21 +354,21 @@ def main():
                 val_loader=val_loader,
                 device=device
             )
-            evaluation_result.condition_name = condition.name
+            evaluation_result.condition_name = condition.condition_name
             
             # Save results
             save_results(
                 results_dir=results_dir,
-                condition_name=condition.name,
+                condition_name=condition.condition_name,
                 training_result=training_result,
                 evaluation_result=evaluation_result,
                 args=args
             )
             
-            all_results[condition.name] = evaluation_result
+            all_results[condition.condition_name] = evaluation_result
             
             condition_time = time.time() - condition_start
-            logger.info(f"Condition {condition.name} completed in {condition_time:.1f}s")
+            logger.info(f"Condition {condition.condition_name} completed in {condition_time:.1f}s")
         
         total_time = time.time() - total_start
         logger.info(f"\nAll conditions completed in {total_time:.1f}s")
