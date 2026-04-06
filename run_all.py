@@ -15,7 +15,7 @@ import torch
 import torch.multiprocessing as mp
 
 from lewis.models import ModelBank
-from lewis.dataset import load_gqa_data
+from lewis.dataset import create_gqa_dataloaders
 from lewis.config import get_all_conditions
 from lewis.train import train_condition, TrainingResult
 from lewis.evaluate import evaluate_condition, compute_all_metrics, EvaluationResult
@@ -262,10 +262,10 @@ def main():
         # Load data once
         logger.info("Loading GQA dataset...")
         data_start = time.time()
-        train_loader, val_loader = load_gqa_data(
+        train_loader, val_loader, answer_vocab = create_gqa_dataloaders(
             batch_size=args.batch_size,
-            num_train_samples=args.num_train,
-            num_eval_samples=args.num_eval
+            train_samples=args.num_train,
+            eval_samples=args.num_eval
         )
         data_time = time.time() - data_start
         logger.info(f"Data loaded in {data_time:.1f}s")
