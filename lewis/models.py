@@ -152,8 +152,8 @@ class ModelBank:
             config.model_name,
             pretrained='webli'
         )
-        # We only need the visual encoder
-        return model.visual
+        # Extract the timm VisionTransformer trunk from the open_clip wrapper
+        return model.visual.trunk
     
     def _get_timm_preprocessor(self, config: ModelConfig) -> transforms.Compose:
         """Get preprocessing pipeline for timm models."""
@@ -222,37 +222,6 @@ class ModelBank:
         
         return patch_tokens, cls_token
     
-    def _extract_features_open_clip(self, model: nn.Module, x: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
-        """Extract features from open_clip model, returning (patch_tokens, cls_token)."""
-        # Similar to timm but with potential differences in architecture
-        x = model.conv1(x)  # patch embedding
-        
-        # Reshape and add cls token
-        x = x.reshape(x.shape[0], x.shape[1], -1).permute(0, 2, 1)
-        cls_token = model.class_embedding.to(x.dtype) + torch.zeros(x.shape[0], 1, x.shape[-1], dtype=x.dtype, device=x.device)
-        x = torch.cat([cls_token, x], dim=1)
-        
-        # Add positional embeddings
-        x = x + model.positional_embedding.to(x.dtype)
-        
-        # Apply layer norm
-        x = model.ln_pre(x)
-        x = x.permute(1, 0, 2)  # NLD -> LND
-        
-        # Forward through transformer
-        x = model.transformer(x)
-        x = x.permute(1, 0, 2)  # LND -> NLD
-        
-        # Apply final layer norm
-        x = model.ln_post(x[:, 0, :])  # Only apply to cls token
-        
-        # For consistency, we need to get patch tokens too
-        # This is a bit hacky but works for our purposes
-        patch_tokens = x.unsqueeze(1).repeat(1, 196, 1)  # Fake patch tokens
-        cls_token = x
-        
-        return patch_tokens, cls_token
-    
     @torch.no_grad()
     def get_features(self, 
                     images: torch.Tensor, 
@@ -296,21 +265,18 @@ class ModelBank:
                     align_corners=False
                 )
             
-            # Normalize
-            if config.source == 'timm':
+            # Normalize with model-specific mean/std
+            if config.source == 'open_clip':
+                mean = torch.tensor([0.5, 0.5, 0.5]).view(1, 3, 1, 1).to(images.device)
+                std = torch.tensor([0.5, 0.5, 0.5]).view(1, 3, 1, 1).to(images.device)
+            else:  # timm (ImageNet)
                 mean = torch.tensor([0.485, 0.456, 0.406]).view(1, 3, 1, 1).to(images.device)
                 std = torch.tensor([0.229, 0.224, 0.225]).view(1, 3, 1, 1).to(images.device)
-            else:  # open_clip
-                mean = torch.tensor([0.48145466, 0.4578275, 0.40821073]).view(1, 3, 1, 1).to(images.device)
-                std = torch.tensor([0.26862954, 0.26130258, 0.27577711]).view(1, 3, 1, 1).to(images.device)
             
             processed_images = (processed_images - mean) / std
             
-            # Extract features
-            if config.source == 'timm':
-                patch_tokens, cls_token = self._extract_features_timm(model, processed_images)
-            else:  # open_clip
-                patch_tokens, cls_token = self._extract_features_open_clip(model, processed_images)
+            # Extract features (all models use timm-style ViT trunk)
+            patch_tokens, cls_token = self._extract_features_timm(model, processed_images)
             
             features[model_name] = {
                 'patch_tokens': patch_tokens,
