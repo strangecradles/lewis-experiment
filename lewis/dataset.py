@@ -10,9 +10,7 @@ Handles:
 """
 
 import json
-import re
-from typing import Dict, List, Tuple, Optional, Set, Union
-from pathlib import Path
+from typing import Dict, List, Tuple, Optional, Set
 from collections import Counter
 from dataclasses import dataclass
 
@@ -21,7 +19,6 @@ from torch.utils.data import Dataset, DataLoader
 import torchvision.transforms as transforms
 from PIL import Image
 import datasets
-from transformers import AutoImageProcessor
 
 
 @dataclass
@@ -107,16 +104,14 @@ class GQADataset(Dataset):
     def __init__(
         self,
         split: str = "train",
-        image_transforms: Dict[str, transforms.Compose] = None,
         max_samples: Optional[int] = None,
         answer_vocab: Optional[Dict[str, int]] = None,
         vocab_size: int = 1500
     ):
         """Initialize GQA dataset.
-        
+
         Args:
             split: Dataset split ("train", "val", or "test")
-            image_transforms: Dict mapping model names to their transforms
             max_samples: Limit dataset size (for faster iteration)
             answer_vocab: Pre-built answer vocabulary
             vocab_size: Size of answer vocabulary to build
@@ -127,16 +122,31 @@ class GQADataset(Dataset):
         self.classifier = QuestionClassifier()
         
         # Load dataset from HuggingFace
-        # GQA requires a config name: train_balanced_instructions, val_balanced_instructions, etc.
-        config_map = {
-            "train": "train_balanced_instructions",
-            "val": "val_balanced_instructions",
-            "test": "testdev_balanced_instructions",
+        # GQA has separate configs for instructions (Q&A) and images
+        # The HF split name for "test" is actually "testdev"
+        hf_split_map = {
+            "train": "train",
+            "val": "val",
+            "test": "testdev",
         }
-        config_name = config_map.get(split, f"{split}_balanced_instructions")
-        print(f"Loading GQA {split} split (config: {config_name})...")
-        self.dataset = datasets.load_dataset("lmms-lab/GQA", config_name, split=split)
-        
+        hf_split = hf_split_map.get(split, split)
+
+        instr_config = f"{hf_split}_balanced_instructions"
+        image_config = f"{hf_split}_balanced_images"
+
+        print(f"Loading GQA {split} split (instructions: {instr_config})...")
+        self.dataset = datasets.load_dataset("lmms-lab/GQA", instr_config, split=hf_split)
+
+        print(f"Loading GQA {split} images (config: {image_config})...")
+        images_ds = datasets.load_dataset("lmms-lab/GQA", image_config, split=hf_split)
+
+        # Build image lookup: imageId -> PIL Image
+        print("Building image lookup table...")
+        self.image_lookup = {}
+        for item in images_ds:
+            self.image_lookup[str(item['id'])] = item['image']
+        print(f"Loaded {len(self.image_lookup)} unique images")
+
         # Sample subset if requested
         if max_samples and len(self.dataset) > max_samples:
             self.dataset = self.dataset.select(range(max_samples))
@@ -150,10 +160,7 @@ class GQADataset(Dataset):
             
         # Process questions and classify capabilities
         self.questions = self._process_questions()
-        
-        # Set up image transforms
-        self.image_transforms = image_transforms or self._get_default_transforms()
-        
+
         print(f"Loaded {len(self.questions)} questions from GQA {split}")
         self._print_capability_stats()
     
@@ -180,12 +187,13 @@ class GQADataset(Dataset):
         questions = []
         
         for item in self.dataset:
-            # Extract fields (adjust based on actual GQA dataset structure)
-            question_id = str(item.get('questionId', len(questions)))
+            question_id = str(item.get('id', len(questions)))
             image_id = str(item.get('imageId', ''))
             question_text = str(item['question'])
             answer = str(item['answer']).lower().strip()
-            question_type = str(item.get('types', ''))  # GQA question type
+            # 'types' is a dict like {'structural': 'verify', 'semantic': 'attr', 'detailed': 'verifyAttr'}
+            types_dict = item.get('types', {})
+            question_type = types_dict.get('detailed', '') if isinstance(types_dict, dict) else str(types_dict)
             
             # Classify required capabilities
             capabilities = self.classifier.classify_question(question_text, question_type)
@@ -236,70 +244,34 @@ class GQADataset(Dataset):
             pct = 100 * count / total if total > 0 else 0
             print(f"  {cap_type}: {count} ({pct:.1f}%)")
     
-    def _get_default_transforms(self) -> Dict[str, transforms.Compose]:
-        """Get default image transforms for each model."""
-        # DINOv2 preprocessing
-        dino_transform = transforms.Compose([
-            transforms.Resize((336, 336), interpolation=transforms.InterpolationMode.BICUBIC),
-            transforms.ToTensor(),
-            transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
-        ])
-        
-        # SigLIP preprocessing  
-        siglip_transform = transforms.Compose([
-            transforms.Resize((224, 224), interpolation=transforms.InterpolationMode.BICUBIC),
-            transforms.ToTensor(),
-            transforms.Normalize(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5])
-        ])
-        
-        # MAE preprocessing
-        mae_transform = transforms.Compose([
-            transforms.Resize((224, 224), interpolation=transforms.InterpolationMode.BICUBIC),
-            transforms.ToTensor(),
-            transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
-        ])
-        
-        return {
-            "dino": dino_transform,
-            "siglip": siglip_transform, 
-            "mae": mae_transform
-        }
-    
     def __len__(self) -> int:
         return len(self.questions)
     
-    def __getitem__(self, idx: int) -> Dict[str, torch.Tensor]:
-        """Get a single example."""
+    def __getitem__(self, idx: int) -> Tuple[torch.Tensor, torch.Tensor]:
+        """Get a single example as (image_tensor, answer_idx).
+
+        Returns a single image tensor (224x224, ImageNet-normalized) and the
+        answer class index.  Per-model preprocessing happens inside ModelBank.
+        """
         question = self.questions[idx]
-        
-        # Load and transform image
-        image = self.dataset[idx]['image']
+
+        # Load image from lookup table by imageId
+        image = self.image_lookup.get(question.image_id)
+        if image is None:
+            image = Image.new('RGB', (224, 224))
         if not isinstance(image, Image.Image):
             image = Image.open(image).convert('RGB')
-        
-        # Apply transforms for each model
-        image_tensors = {}
-        for model_name, transform in self.image_transforms.items():
-            image_tensors[f"image_{model_name}"] = transform(image)
-        
-        # Encode answer
+        image = image.convert('RGB')
+
+        # Use a single shared transform; per-model normalization is in ModelBank
+        transform = transforms.Compose([
+            transforms.Resize((224, 224), interpolation=transforms.InterpolationMode.BICUBIC),
+            transforms.ToTensor(),
+        ])
+        image_tensor = transform(image)
+
         answer_idx = self.answer_vocab.get(question.answer, 0)  # 0 = <UNK>
-        
-        # Convert capabilities to binary flags
-        capabilities = question.capabilities_required
-        
-        return {
-            **image_tensors,
-            "question_text": question.question,
-            "answer_idx": torch.tensor(answer_idx, dtype=torch.long),
-            "answer_text": question.answer,
-            "question_id": question.question_id,
-            "image_id": question.image_id,
-            "requires_spatial": torch.tensor("spatial" in capabilities, dtype=torch.bool),
-            "requires_semantic": torch.tensor("semantic" in capabilities, dtype=torch.bool), 
-            "requires_material": torch.tensor("material" in capabilities, dtype=torch.bool),
-            "num_capabilities": torch.tensor(len(capabilities), dtype=torch.long)
-        }
+        return image_tensor, torch.tensor(answer_idx, dtype=torch.long)
     
     def get_answer_vocab(self) -> Dict[str, int]:
         """Get the answer vocabulary."""
@@ -352,17 +324,15 @@ def create_gqa_dataloaders(
     eval_samples: Optional[int] = None,
     batch_size: int = 32,
     num_workers: int = 4,
-    image_transforms: Optional[Dict[str, transforms.Compose]] = None
 ) -> Tuple[DataLoader, DataLoader, Dict[str, int]]:
     """Create GQA train and validation dataloaders.
-    
+
     Args:
         train_samples: Limit training samples (None = use all)
         eval_samples: Limit eval samples (None = use all)
         batch_size: Batch size for dataloaders
         num_workers: Number of dataloader workers
-        image_transforms: Image transforms for each model
-    
+
     Returns:
         (train_loader, val_loader, answer_vocab)
     """
@@ -370,15 +340,13 @@ def create_gqa_dataloaders(
     train_dataset = GQADataset(
         split="train",
         max_samples=train_samples,
-        image_transforms=image_transforms
     )
-    
+
     # Create validation dataset with same vocabulary
     val_dataset = GQADataset(
-        split="val", 
+        split="val",
         max_samples=eval_samples,
         answer_vocab=train_dataset.get_answer_vocab(),
-        image_transforms=image_transforms
     )
     
     # Create dataloaders
@@ -466,9 +434,9 @@ if __name__ == "__main__":
     print(f"Answer vocab size: {len(vocab)}")
     
     # Test a batch
-    batch = next(iter(train_loader))
-    print(f"Batch keys: {list(batch.keys())}")
-    print(f"Image shapes: {[(k, v.shape) for k, v in batch.items() if 'image' in k]}")
+    images, answers = next(iter(train_loader))
+    print(f"Image batch shape: {images.shape}")
+    print(f"Answer batch shape: {answers.shape}")
     
     # Analyze capabilities
     train_dataset = train_loader.dataset

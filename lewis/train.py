@@ -130,15 +130,14 @@ def train_condition(
         train_loss = 0.0
         train_batches = 0
         
-        for batch_idx, (images, questions, answers) in enumerate(train_loader):
+        for batch_idx, (images, answers) in enumerate(train_loader):
             images = images.to(device)
-            questions = questions.to(device) if questions is not None else None
             answers = answers.to(device)
-            
+
             optimizer.zero_grad()
-            
+
             # Forward pass
-            logits = system(images, questions)
+            logits = system(images)
             loss = criterion(logits, answers)
             
             # Backward pass
@@ -159,12 +158,11 @@ def train_condition(
         val_batches = 0
         
         with torch.no_grad():
-            for images, questions, answers in val_loader:
+            for images, answers in val_loader:
                 images = images.to(device)
-                questions = questions.to(device) if questions is not None else None
                 answers = answers.to(device)
-                
-                logits = system(images, questions)
+
+                logits = system(images)
                 loss = criterion(logits, answers)
                 
                 val_loss += loss.item()

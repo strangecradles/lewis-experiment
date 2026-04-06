@@ -60,21 +60,12 @@ def evaluate_condition(
     overall_total = 0
     
     with torch.no_grad():
-        for batch_idx, batch_data in enumerate(val_loader):
-            if len(batch_data) == 3:
-                images, questions, answers = batch_data
-                batch_question_types = None
-            elif len(batch_data) == 4:
-                images, questions, answers, batch_question_types = batch_data
-            else:
-                raise ValueError(f"Unexpected batch format: {len(batch_data)} elements")
-                
+        for batch_idx, (images, answers) in enumerate(val_loader):
             images = images.to(device)
-            questions = questions.to(device) if questions is not None else None
             answers = answers.to(device)
-            
+
             # Forward pass
-            logits = system(images, questions)
+            logits = system(images)
             predictions = logits.argmax(dim=1)
             
             # Update overall metrics
