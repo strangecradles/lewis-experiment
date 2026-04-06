@@ -46,7 +46,7 @@ class ModelBank:
             model_name='vit_small_patch14_dinov2.lvd142m',
             patch_size=14,
             embed_dim=384,
-            image_size=224
+            image_size=518
         ),
         'siglip': ModelConfig(
             name='siglip',
