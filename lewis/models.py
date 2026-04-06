@@ -40,8 +40,8 @@ class ModelBank:
     """
     
     MODELS = {
-        'dinov2': ModelConfig(
-            name='dinov2',
+        'dino': ModelConfig(
+            name='dino',
             source='timm',
             model_name='vit_small_patch14_dinov2.lvd142m',
             patch_size=14,
@@ -328,12 +328,12 @@ def test_model_bank():
         dummy_images = dummy_images.cuda()
     
     # Test single model
-    features = bank.get_features(dummy_images, ['dinov2'])
-    print(f"DINOv2 features: patch_tokens {features['dinov2']['patch_tokens'].shape}, "
-          f"cls_token {features['dinov2']['cls_token'].shape}")
-    
+    features = bank.get_features(dummy_images, ['dino'])
+    print(f"DINOv2 features: patch_tokens {features['dino']['patch_tokens'].shape}, "
+          f"cls_token {features['dino']['cls_token'].shape}")
+
     # Test all models
-    features = bank.get_features(dummy_images, ['dinov2', 'siglip', 'mae'])
+    features = bank.get_features(dummy_images, ['dino', 'siglip', 'mae'])
     for name, feats in features.items():
         print(f"{name}: patch_tokens {feats['patch_tokens'].shape}, "
               f"cls_token {feats['cls_token'].shape}")

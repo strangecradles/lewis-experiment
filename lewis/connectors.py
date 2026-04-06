@@ -414,9 +414,9 @@ def test_connectors():
     
     # Test different model combinations
     test_cases = [
-        ['dinov2'],           # Single model
-        ['dinov2', 'siglip'], # Pair
-        ['dinov2', 'siglip', 'mae']  # All three
+        ['dino'],           # Single model
+        ['dino', 'siglip'], # Pair
+        ['dino', 'siglip', 'mae']  # All three
     ]
     
     batch_size = 2
