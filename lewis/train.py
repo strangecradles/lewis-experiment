@@ -12,7 +12,7 @@ import torch.optim as optim
 from torch.utils.data import DataLoader
 from torch.optim.lr_scheduler import CosineAnnealingLR
 
-from .models import ModelBank
+from .models import ModelBank, FeatureCache
 from .connectors import ComposedSystem
 from .config import ConditionConfig
 from .utils import get_logger
@@ -45,10 +45,11 @@ class TrainingResult:
 
 def train_condition(
     model_bank: ModelBank,
-    condition_config: ConditionConfig, 
+    condition_config: ConditionConfig,
     train_loader: DataLoader,
     val_loader: DataLoader,
     device: torch.device,
+    feature_cache: FeatureCache,
     num_classes: int = 1500,
     max_epochs: int = 10,
     patience: int = 2,
@@ -56,20 +57,22 @@ def train_condition(
     weight_decay: float = 0.01,
     batch_size: int = 128
 ) -> TrainingResult:
-    """Train a single experimental condition.
-    
+    """Train a single experimental condition using pre-cached features.
+
     Args:
-        model_bank: Frozen vision models
+        model_bank: Frozen vision models (used only for model dimensions)
         condition_config: Which models/connectors to use
-        train_loader: Training data
-        val_loader: Validation data  
+        train_loader: Training data (yields image_cache_indices, answer_indices)
+        val_loader: Validation data
         device: Training device
+        feature_cache: Pre-extracted frozen features
+        num_classes: Number of answer classes
         max_epochs: Maximum training epochs
         patience: Early stopping patience
         learning_rate: AdamW learning rate
         weight_decay: AdamW weight decay
         batch_size: Expected batch size (for logging)
-        
+
     Returns:
         TrainingResult with best model and training history
     """
@@ -130,14 +133,14 @@ def train_condition(
         train_loss = 0.0
         train_batches = 0
         
-        for batch_idx, (images, answers) in enumerate(train_loader):
-            images = images.to(device)
+        for batch_idx, (image_indices, answers) in enumerate(train_loader):
             answers = answers.to(device)
+            features = feature_cache.get_batch(active_models, image_indices, device)
 
             optimizer.zero_grad()
 
-            # Forward pass
-            logits = system(images)
+            # Forward pass (connectors + task head only)
+            logits = system.forward_cached(features)
             loss = criterion(logits, answers)
             
             # Backward pass
@@ -158,11 +161,11 @@ def train_condition(
         val_batches = 0
         
         with torch.no_grad():
-            for images, answers in val_loader:
-                images = images.to(device)
+            for image_indices, answers in val_loader:
                 answers = answers.to(device)
+                features = feature_cache.get_batch(active_models, image_indices, device)
 
-                logits = system(images)
+                logits = system.forward_cached(features)
                 loss = criterion(logits, answers)
                 
                 val_loss += loss.item()

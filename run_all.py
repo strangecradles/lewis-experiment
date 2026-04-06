@@ -14,8 +14,8 @@ from typing import Dict, List, Optional
 import torch
 import torch.multiprocessing as mp
 
-from lewis.models import ModelBank
-from lewis.dataset import create_gqa_dataloaders
+from lewis.models import ModelBank, FeatureCache
+from lewis.dataset import GQADataset, CachedGQADataset
 from lewis.config import get_all_conditions
 from lewis.train import train_condition, TrainingResult
 from lewis.evaluate import evaluate_condition, compute_all_metrics, EvaluationResult
@@ -259,23 +259,68 @@ def main():
         json.dump(vars(args), f, indent=2)
     
     try:
-        # Load data once
+        # ------------------------------------------------------------------
+        # Phase 1: Load GQA metadata (questions, answers, images)
+        # ------------------------------------------------------------------
         logger.info("Loading GQA dataset...")
         data_start = time.time()
-        train_loader, val_loader, answer_vocab = create_gqa_dataloaders(
-            batch_size=args.batch_size,
-            train_samples=args.num_train,
-            eval_samples=args.num_eval
+
+        train_dataset = GQADataset(split="train", max_samples=args.num_train)
+        val_dataset = GQADataset(
+            split="val",
+            max_samples=args.num_eval,
+            answer_vocab=train_dataset.get_answer_vocab(),
         )
+        answer_vocab = train_dataset.get_answer_vocab()
         data_time = time.time() - data_start
         logger.info(f"Data loaded in {data_time:.1f}s")
-        
-        # Load all models once
+
+        # ------------------------------------------------------------------
+        # Phase 2: Load frozen vision models
+        # ------------------------------------------------------------------
         logger.info("Loading vision models...")
         model_start = time.time()
         model_bank = ModelBank(device=device)
         model_time = time.time() - model_start
         logger.info(f"Models loaded in {model_time:.1f}s")
+
+        # ------------------------------------------------------------------
+        # Phase 3: Pre-extract features (one-time cost, ~30 min)
+        # ------------------------------------------------------------------
+        logger.info("Pre-extracting features from frozen models...")
+        cache_start = time.time()
+
+        all_images = {**train_dataset.image_lookup, **val_dataset.image_lookup}
+        feature_cache = model_bank.precompute_features(all_images, batch_size=64)
+
+        # Free PIL images from memory
+        del all_images
+        train_dataset.image_lookup.clear()
+        val_dataset.image_lookup.clear()
+
+        cache_time = time.time() - cache_start
+        logger.info(f"Feature cache built in {cache_time:.1f}s")
+
+        # ------------------------------------------------------------------
+        # Phase 4: Create lightweight cached dataloaders
+        # ------------------------------------------------------------------
+        from torch.utils.data import DataLoader
+
+        train_cached = CachedGQADataset(
+            train_dataset.questions, answer_vocab, feature_cache.image_id_to_idx
+        )
+        val_cached = CachedGQADataset(
+            val_dataset.questions, answer_vocab, feature_cache.image_id_to_idx
+        )
+
+        train_loader = DataLoader(
+            train_cached, batch_size=args.batch_size, shuffle=True,
+            num_workers=4, pin_memory=True,
+        )
+        val_loader = DataLoader(
+            val_cached, batch_size=args.batch_size, shuffle=False,
+            num_workers=4, pin_memory=True,
+        )
         
         # Get experimental conditions
         all_conditions = get_all_conditions()
@@ -328,9 +373,10 @@ def main():
                     train_loader=train_loader,
                     val_loader=val_loader,
                     device=device,
+                    feature_cache=feature_cache,
                     num_classes=num_classes,
                     max_epochs=args.max_epochs,
-                    learning_rate=args.learning_rate
+                    learning_rate=args.learning_rate,
                 )
                 logger.info(f"Training completed in {training_result.total_train_time:.1f}s")
             
@@ -352,7 +398,8 @@ def main():
             evaluation_result = evaluate_condition(
                 system=system,
                 val_loader=val_loader,
-                device=device
+                device=device,
+                feature_cache=feature_cache,
             )
             evaluation_result.condition_name = condition.condition_name
             

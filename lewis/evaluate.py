@@ -11,7 +11,7 @@ import torch
 import numpy as np
 from torch.utils.data import DataLoader
 
-from .models import ModelBank
+from .models import ModelBank, FeatureCache
 from .connectors import ComposedSystem
 from .config import ConditionConfig
 from .utils import get_logger
@@ -35,83 +35,54 @@ def evaluate_condition(
     system: ComposedSystem,
     val_loader: DataLoader,
     device: torch.device,
-    question_types: Optional[List[str]] = None
+    feature_cache: FeatureCache,
 ) -> EvaluationResult:
-    """Evaluate a single condition on validation data.
-    
+    """Run evaluation on validation data using cached features.
+
     Args:
         system: Trained composed system
-        val_loader: Validation data loader
-        device: Evaluation device
-        question_types: Question type labels (if available)
-        
+        val_loader: Validation data (yields image_indices, answer_indices)
+        device: Device
+        feature_cache: Pre-extracted frozen features
+
     Returns:
         EvaluationResult with accuracy metrics
     """
     start_time = time.time()
-    logger.info(f"Evaluating condition: {system.__class__.__name__}")
-    
+
     system.eval()
-    
-    # Track predictions by question type
-    correct_by_type = defaultdict(int)
-    total_by_type = defaultdict(int)
+    active_models = system.active_models
+
     overall_correct = 0
     overall_total = 0
-    
-    with torch.no_grad():
-        for batch_idx, (images, answers) in enumerate(val_loader):
-            images = images.to(device)
-            answers = answers.to(device)
 
-            # Forward pass
-            logits = system(images)
+    with torch.no_grad():
+        for image_indices, answers in val_loader:
+            answers = answers.to(device)
+            features = feature_cache.get_batch(active_models, image_indices, device)
+
+            logits = system.forward_cached(features)
             predictions = logits.argmax(dim=1)
-            
-            # Update overall metrics
-            batch_correct = (predictions == answers).cpu().numpy()
-            overall_correct += batch_correct.sum()
-            overall_total += len(batch_correct)
-            
-            # Update per-question-type metrics
-            if batch_question_types is not None:
-                for i, (correct, qtype) in enumerate(zip(batch_correct, batch_question_types)):
-                    correct_by_type[qtype] += int(correct)
-                    total_by_type[qtype] += 1
-            
-            if batch_idx % 50 == 0:
-                logger.debug(f"Evaluated {batch_idx * val_loader.batch_size} samples")
-    
-    # Compute accuracies
+
+            overall_correct += (predictions == answers).sum().item()
+            overall_total += answers.size(0)
+
     overall_accuracy = overall_correct / overall_total
-    accuracy_by_type = {}
-    
-    for qtype, total in total_by_type.items():
-        if total > 0:
-            accuracy_by_type[qtype] = correct_by_type[qtype] / total
-    
-    eval_time = time.time() - start_time
-    
+    time_taken = time.time() - start_time
+
     logger.info(
-        f"Evaluation complete: "
-        f"overall_accuracy={overall_accuracy:.4f}, "
-        f"total_questions={overall_total}, "
-        f"time={eval_time:.1f}s"
+        f"Accuracy={overall_accuracy:.4f}, "
+        f"n={overall_total}, "
+        f"time={time_taken:.1f}s"
     )
-    
-    if accuracy_by_type:
-        logger.info("Accuracy by question type:")
-        for qtype, acc in accuracy_by_type.items():
-            count = total_by_type[qtype]
-            logger.info(f"  {qtype}: {acc:.4f} ({count} questions)")
-    
+
     return EvaluationResult(
         condition_name=getattr(system, 'condition_name', 'unknown'),
         overall_accuracy=overall_accuracy,
-        accuracy_by_question_type=accuracy_by_type,
+        accuracy_by_question_type={},
         total_questions=overall_total,
-        questions_by_type=dict(total_by_type),
-        eval_time=eval_time
+        questions_by_type={},
+        eval_time=time_taken,
     )
 
 

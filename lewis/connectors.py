@@ -373,6 +373,27 @@ class ComposedSystem(nn.Module):
         
         return logits
     
+    def forward_cached(self, features: Dict[str, Dict[str, torch.Tensor]]) -> torch.Tensor:
+        """Forward pass from pre-extracted features (skips frozen model inference).
+
+        Args:
+            features: {model_name: {'patch_tokens': Tensor, 'cls_token': Tensor}}
+
+        Returns:
+            logits: [batch_size, num_classes]
+        """
+        if self.connector_bank is not None:
+            enriched_cls = self.connector_bank(features)
+        else:
+            enriched_cls = {
+                name: features[name]['cls_token']
+                for name in self.active_models
+            }
+
+        cls_tokens = [enriched_cls[name] for name in self.active_models]
+        concatenated_cls = torch.cat(cls_tokens, dim=1)
+        return self.task_head(concatenated_cls)
+
     def get_trainable_parameters(self) -> Dict[str, int]:
         """Get count of trainable parameters by component."""
         params = {'task_head': self.task_head.num_parameters()}

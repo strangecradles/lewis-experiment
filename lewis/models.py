@@ -29,6 +29,35 @@ class ModelConfig:
     patch_size: int
     embed_dim: int
     image_size: int = 224
+
+
+class FeatureCache:
+    """Pre-extracted features from frozen models, stored in CPU memory (float16)."""
+
+    def __init__(
+        self,
+        cls_tokens: Dict[str, torch.Tensor],
+        patch_tokens: Dict[str, torch.Tensor],
+        image_id_to_idx: Dict[str, int],
+    ):
+        self.cls_tokens = cls_tokens      # {model: [N, D]}
+        self.patch_tokens = patch_tokens  # {model: [N, P, D]}
+        self.image_id_to_idx = image_id_to_idx
+
+    def get_batch(
+        self,
+        model_names: List[str],
+        indices: torch.Tensor,
+        device: torch.device,
+    ) -> Dict[str, Dict[str, torch.Tensor]]:
+        """Gather features for a batch of image indices and move to device as float32."""
+        features: Dict[str, Dict[str, torch.Tensor]] = {}
+        for name in model_names:
+            features[name] = {
+                'cls_token': self.cls_tokens[name][indices].to(device=device, dtype=torch.float32),
+                'patch_tokens': self.patch_tokens[name][indices].to(device=device, dtype=torch.float32),
+            }
+        return features
     
 
 class ModelBank:
@@ -290,6 +319,71 @@ class ModelBank:
         
         return features
     
+    @torch.no_grad()
+    def precompute_features(
+        self,
+        image_lookup: Dict[str, 'Image.Image'],
+        batch_size: int = 32,
+    ) -> FeatureCache:
+        """Pre-extract features from all models for all images.
+
+        Processes images in batches through all 3 frozen models and stores
+        results as float16 tensors in CPU memory.
+        """
+        from PIL import Image as PILImage
+
+        image_ids = sorted(image_lookup.keys())
+        image_id_to_idx = {img_id: idx for idx, img_id in enumerate(image_ids)}
+        num_images = len(image_ids)
+        model_names = list(self.MODELS.keys())
+
+        print(f"Pre-extracting features for {num_images} images across {len(model_names)} models...")
+
+        to_tensor = transforms.Compose([
+            transforms.Resize((224, 224), interpolation=transforms.InterpolationMode.BICUBIC),
+            transforms.ToTensor(),
+        ])
+
+        cls_lists: Dict[str, List[torch.Tensor]] = {n: [] for n in model_names}
+        patch_lists: Dict[str, List[torch.Tensor]] = {n: [] for n in model_names}
+
+        for batch_start in range(0, num_images, batch_size):
+            batch_end = min(batch_start + batch_size, num_images)
+            batch_ids = image_ids[batch_start:batch_end]
+
+            tensors = []
+            for img_id in batch_ids:
+                img = image_lookup[img_id]
+                if not isinstance(img, PILImage.Image):
+                    img = PILImage.new('RGB', (224, 224))
+                tensors.append(to_tensor(img.convert('RGB')))
+
+            batch = torch.stack(tensors).to(self.device)
+            features = self.get_features(batch, model_names)
+
+            for name in model_names:
+                cls_lists[name].append(features[name]['cls_token'].half().cpu())
+                patch_lists[name].append(features[name]['patch_tokens'].half().cpu())
+
+            done = batch_end
+            if done % (batch_size * 100) < batch_size or done == num_images:
+                print(f"  {done}/{num_images} images processed")
+
+        cls_tokens = {n: torch.cat(ts) for n, ts in cls_lists.items()}
+        patch_tokens = {n: torch.cat(ts) for n, ts in patch_lists.items()}
+
+        total_gb = sum(t.nbytes for t in cls_tokens.values()) + sum(t.nbytes for t in patch_tokens.values())
+        total_gb /= 1e9
+        for name in model_names:
+            print(f"  {name}: cls {cls_tokens[name].shape}, patches {patch_tokens[name].shape}")
+        print(f"  Total cache size: {total_gb:.1f} GB (float16)")
+
+        return FeatureCache(
+            cls_tokens=cls_tokens,
+            patch_tokens=patch_tokens,
+            image_id_to_idx=image_id_to_idx,
+        )
+
     def get_model_info(self) -> Dict[str, Dict[str, any]]:
         """Get information about loaded models."""
         info = {}

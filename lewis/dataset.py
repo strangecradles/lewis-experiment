@@ -321,6 +321,31 @@ class GQADataset(Dataset):
         return subsets
 
 
+class CachedGQADataset(Dataset):
+    """Lightweight dataset that returns feature-cache indices + answer labels."""
+
+    def __init__(
+        self,
+        questions: List[GQAQuestion],
+        answer_vocab: Dict[str, int],
+        image_id_to_idx: Dict[str, int],
+    ):
+        self.image_indices = torch.tensor(
+            [image_id_to_idx.get(q.image_id, 0) for q in questions],
+            dtype=torch.long,
+        )
+        self.answer_indices = torch.tensor(
+            [answer_vocab.get(q.answer, 0) for q in questions],
+            dtype=torch.long,
+        )
+
+    def __len__(self) -> int:
+        return len(self.image_indices)
+
+    def __getitem__(self, idx: int) -> Tuple[torch.Tensor, torch.Tensor]:
+        return self.image_indices[idx], self.answer_indices[idx]
+
+
 def create_gqa_dataloaders(
     train_samples: Optional[int] = None,
     eval_samples: Optional[int] = None,
