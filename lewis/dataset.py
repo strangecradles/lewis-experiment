@@ -137,15 +137,17 @@ class GQADataset(Dataset):
         print(f"Loading GQA {split} split (instructions: {instr_config})...")
         self.dataset = datasets.load_dataset("lmms-lab/GQA", instr_config, split=hf_split)
 
-        print(f"Loading GQA {split} images (config: {image_config})...")
-        images_ds = datasets.load_dataset("lmms-lab/GQA", image_config, split=hf_split)
-
-        # Build image lookup: imageId -> PIL Image
-        print("Building image lookup table...")
-        self.image_lookup = {}
-        for item in images_ds:
+        # Stream images to build in-memory lookup (avoids caching 10GB+ to disk)
+        print(f"Streaming GQA {split} images (config: {image_config})...")
+        images_stream = datasets.load_dataset(
+            "lmms-lab/GQA", image_config, split=hf_split, streaming=True
+        )
+        self.image_lookup: Dict[str, Image.Image] = {}
+        for i, item in enumerate(images_stream):
             self.image_lookup[str(item['id'])] = item['image']
-        print(f"Loaded {len(self.image_lookup)} unique images")
+            if (i + 1) % 10000 == 0:
+                print(f"  Loaded {i + 1} images...")
+        print(f"Loaded {len(self.image_lookup)} unique images into memory")
 
         # Sample subset if requested
         if max_samples and len(self.dataset) > max_samples:
