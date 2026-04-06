@@ -59,7 +59,7 @@ class ModelBank:
         'mae': ModelConfig(
             name='mae',
             source='timm',
-            model_name='vit_base_patch16_mae',
+            model_name='vit_base_patch16_224',
             patch_size=16,
             embed_dim=768,
             image_size=224
