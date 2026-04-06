@@ -127,8 +127,15 @@ class GQADataset(Dataset):
         self.classifier = QuestionClassifier()
         
         # Load dataset from HuggingFace
-        print(f"Loading GQA {split} split...")
-        self.dataset = datasets.load_dataset("lmms-lab/GQA", split=split)
+        # GQA requires a config name: train_balanced_instructions, val_balanced_instructions, etc.
+        config_map = {
+            "train": "train_balanced_instructions",
+            "val": "val_balanced_instructions",
+            "test": "testdev_balanced_instructions",
+        }
+        config_name = config_map.get(split, f"{split}_balanced_instructions")
+        print(f"Loading GQA {split} split (config: {config_name})...")
+        self.dataset = datasets.load_dataset("lmms-lab/GQA", config_name, split=split)
         
         # Sample subset if requested
         if max_samples and len(self.dataset) > max_samples:
