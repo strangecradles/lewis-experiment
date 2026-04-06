@@ -41,7 +41,7 @@ def get_device_info() -> dict:
     info = {"device": str(device), "type": device.type}
     if device.type == "cuda":
         info["name"] = torch.cuda.get_device_name(0)
-        info["memory_gb"] = torch.cuda.get_device_properties(0).total_mem / 1e9
+        info["memory_gb"] = torch.cuda.get_device_properties(0).total_memory / 1e9
     return info
 
 
