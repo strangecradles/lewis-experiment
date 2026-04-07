@@ -54,8 +54,8 @@ class FeatureCache:
         features: Dict[str, Dict[str, torch.Tensor]] = {}
         for name in model_names:
             features[name] = {
-                'cls_token': self.cls_tokens[name][indices].to(device=device, dtype=torch.float32),
-                'patch_tokens': self.patch_tokens[name][indices].to(device=device, dtype=torch.float32),
+                'cls_token': self.cls_tokens[name][indices].float(),
+                'patch_tokens': self.patch_tokens[name][indices].float(),
             }
         return features
     
@@ -329,8 +329,8 @@ class ModelBank:
             features = self.get_features(batch, model_names)
 
             for name in model_names:
-                cls_lists[name].append(features[name]['cls_token'].half().cpu())
-                patch_lists[name].append(features[name]['patch_tokens'].half().cpu())
+                cls_lists[name].append(features[name]['cls_token'].half())
+                patch_lists[name].append(features[name]['patch_tokens'].half())
 
             done = batch_end
             if done % (batch_size * 100) < batch_size or done == num_images:
@@ -343,7 +343,12 @@ class ModelBank:
         total_gb /= 1e9
         for name in model_names:
             print(f"  {name}: cls {cls_tokens[name].shape}, patches {patch_tokens[name].shape}")
-        print(f"  Total cache size: {total_gb:.1f} GB (float16)")
+        print(f"  Total cache size: {total_gb:.1f} GB (float16, on GPU)")
+
+        # Free frozen models from GPU — no longer needed
+        print("  Freeing frozen models from GPU...")
+        self.models.clear()
+        torch.cuda.empty_cache()
 
         return FeatureCache(
             cls_tokens=cls_tokens,
