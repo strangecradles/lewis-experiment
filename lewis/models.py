@@ -329,26 +329,35 @@ class ModelBank:
             features = self.get_features(batch, model_names)
 
             for name in model_names:
-                cls_lists[name].append(features[name]['cls_token'].half())
-                patch_lists[name].append(features[name]['patch_tokens'].half())
+                # Store on CPU during extraction (GPU holds frozen models)
+                cls_lists[name].append(features[name]['cls_token'].half().cpu())
+                patch_lists[name].append(features[name]['patch_tokens'].half().cpu())
 
             done = batch_end
             if done % (batch_size * 100) < batch_size or done == num_images:
                 print(f"  {done}/{num_images} images processed")
 
-        cls_tokens = {n: torch.cat(ts) for n, ts in cls_lists.items()}
-        patch_tokens = {n: torch.cat(ts) for n, ts in patch_lists.items()}
+        # Free frozen models from GPU before moving cache there
+        print("  Freeing frozen models from GPU...")
+        self.models.clear()
+        self.preprocessors.clear()
+        torch.cuda.empty_cache()
+
+        # Concatenate on CPU, then move to GPU
+        print("  Concatenating and moving cache to GPU...")
+        cls_tokens = {}
+        patch_tokens = {}
+        for name in model_names:
+            cls_tokens[name] = torch.cat(cls_lists[name]).to(self.device)
+            del cls_lists[name]
+            patch_tokens[name] = torch.cat(patch_lists[name]).to(self.device)
+            del patch_lists[name]
 
         total_gb = sum(t.nbytes for t in cls_tokens.values()) + sum(t.nbytes for t in patch_tokens.values())
         total_gb /= 1e9
         for name in model_names:
             print(f"  {name}: cls {cls_tokens[name].shape}, patches {patch_tokens[name].shape}")
-        print(f"  Total cache size: {total_gb:.1f} GB (float16, on GPU)")
-
-        # Free frozen models from GPU — no longer needed
-        print("  Freeing frozen models from GPU...")
-        self.models.clear()
-        torch.cuda.empty_cache()
+        print(f"  Total cache size: {total_gb:.1f} GB (float16 on GPU)")
 
         return FeatureCache(
             cls_tokens=cls_tokens,
