@@ -366,18 +366,16 @@ class ModelBank:
         )
 
     def get_model_info(self) -> Dict[str, Dict[str, any]]:
-        """Get information about loaded models."""
+        """Get information about models (works even after frozen models are freed)."""
         info = {}
         for name, config in self.MODELS.items():
+            entry: Dict[str, any] = {'config': config}
             if name in self.models:
                 model = self.models[name]
-                num_params = sum(p.numel() for p in model.parameters())
-                info[name] = {
-                    'config': config,
-                    'num_parameters': num_params,
-                    'device': next(model.parameters()).device,
-                    'frozen': all(not p.requires_grad for p in model.parameters())
-                }
+                entry['num_parameters'] = sum(p.numel() for p in model.parameters())
+                entry['device'] = next(model.parameters()).device
+                entry['frozen'] = all(not p.requires_grad for p in model.parameters())
+            info[name] = entry
         return info
 
 
