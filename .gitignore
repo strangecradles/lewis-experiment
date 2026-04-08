@@ -64,3 +64,4 @@ models/
 checkpoints/
 *.tar.gz
 *.zip
+.DS_Store
