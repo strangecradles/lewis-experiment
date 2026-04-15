@@ -144,7 +144,7 @@ Key papers:
 - "Transcendence" (NeurIPS 2024)
 - Large Legislative Models (arXiv 2410.08345)
 
-## Internship Relevance (Isara)
+## Isara
 
 This connects directly to Isara's core mission:
 
